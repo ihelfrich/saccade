@@ -22,7 +22,10 @@ const el = {};
   'chipPass1','searchInput','searchResults','noteList','btnReplayNotes','btnCopyNotes','btnClearNotes',
   'recapModal','recapBody','btnRecapReplay','btnRecapClose','statsModal','statsBody','btnStatsClose',
   'backdrop','cardSub','markPulse','syncOff','syncOn','syncTokenInput','btnSyncConnect','btnSyncNow',
-  'btnSyncOffBtn','syncStatus'
+  'btnSyncOffBtn','syncStatus',
+  'btnReview','reviewCount','btnReviewDoc','btnRecapReview','reviewModal','reviewProgress','reviewSec',
+  'reviewPrompt','reviewCue','reviewAnswer','reviewReveal','reviewGrade','reviewAgain','reviewGood',
+  'reviewQuit','setReviewMode','btnExport','importInput','installNote'
 ].forEach(id => el[id] = document.getElementById(id));
 
 /* ---------------- settings ---------------- */
@@ -30,7 +33,7 @@ const DEFAULTS = {
   wpm: 320, chunk: 1, theme: 'dark', font: 'hyper', size: 1,
   guides: true, autoFocus: true, bionic: true, stripMode: 'sentence',
   ramp: true, longWords: true, punct: 1, breakEvery: 8, dailyGoal: 5000,
-  speedMode: 'manual', firstPass: false,
+  speedMode: 'manual', firstPass: false, reviewMode: 'cloze',
   cites: 'collapse', math: 'collapse', refs: 'skip'
 };
 let settings = Object.assign({}, DEFAULTS, JSON.parse(LS.getItem('saccade.settings') || '{}'));
@@ -634,8 +637,9 @@ function finishDoc() {
     `<div class="bignum">${fmtWords(state.tokens.length)} words</div>` +
     `<p>${secs} section${secs > 1 ? 's' : ''} · ${hls.length} sentence${hls.length === 1 ? '' : 's'} saved to notes</p>` +
     (hls.length
-      ? '<p>Replaying your highlights now is the cheapest way to make this stick.</p>'
-      : '<p>Next time, press h on sentences worth keeping; you can replay just those at the end.</p>');
+      ? '<p>Test yourself on them now while they are fresh. Trying to recall a claim beats re-reading it, and each card comes back on a spaced schedule so it lasts.</p>'
+      : '<p>Next time, press h on the claims worth keeping. The app then quizzes you on them and reschedules each by how well you did.</p>');
+  el.btnRecapReview.classList.toggle('hidden', !hls.length);
   el.btnRecapReplay.classList.toggle('hidden', !hls.length);
   el.recapModal.classList.remove('hidden');
 }
@@ -934,7 +938,8 @@ function markCurrent() {
     delete dead.hl[state.doc.id][hashText(text)];   // deliberate re-save beats old deletion
     saveDead();
   }
-  hls.push({ b: toks[a].block, text, sec, added: Date.now() });
+  const now = Date.now();
+  hls.push({ b: toks[a].block, text, sec, added: now, srs: initSrs(now) });
   setHls(hls);
   pulse('saved ✓');
   if (!el.drawerNotes.classList.contains('hidden')) renderNotes();
@@ -999,7 +1004,184 @@ function replayNotes() {
   }
   el.recapModal.classList.add('hidden');
   openDoc({ title: 'Highlights: ' + src.title, blocks, ephemeral: true });
-  toast('Replaying your ' + hls.length + ' saved sentences.');
+  toast('Re-streaming your ' + hls.length + ' saved sentences.');
+}
+
+/* ---------------- spaced retrieval practice ----------------
+   Notes are for testing yourself, not re-reading. Each saved highlight
+   carries a small SM-2-style schedule; grading it reschedules when it
+   next comes due. Retrieval + spacing are the two highest-utility study
+   moves in the literature (Roediger & Karpicke 2006; Dunlosky 2013). */
+const DAY = 86400000;
+const REVIEW_CAP = 20;   // keep a session short; overdue items roll forward silently
+function initSrs(added) {
+  return { due: (added || Date.now()) + DAY, interval: 0, reps: 0, lapses: 0, ease: 2.3, last: 0 };
+}
+function gradeSrs(h, good) {
+  const s = h.srs || (h.srs = initSrs(h.added));
+  const now = Date.now();
+  s.last = now;
+  if (!good) {
+    s.lapses = (s.lapses || 0) + 1;
+    s.reps = 0;
+    s.interval = 0;
+    s.ease = Math.max(1.3, (s.ease || 2.3) - 0.2);
+    s.due = now + 10 * 60000;                 // relearn in ~10 min, same session
+  } else {
+    s.reps = (s.reps || 0) + 1;
+    s.ease = Math.min(2.8, (s.ease || 2.3) + 0.05);
+    if (s.reps === 1) s.interval = 1;
+    else if (s.reps === 2) s.interval = 3;
+    else s.interval = Math.min(365, Math.round((s.interval || 1) * s.ease));
+    s.due = now + s.interval * DAY;
+  }
+}
+function readHls(docId) { try { return JSON.parse(LS.getItem('saccade.hl.' + docId) || '[]'); } catch (e) { return []; } }
+function dueItems() {
+  const now = Date.now();
+  const out = [];
+  for (const e of libIndex()) {
+    readHls(e.id).forEach((h, idx) => {
+      const due = h.srs ? h.srs.due : (h.added || 0) + DAY;
+      if (due <= now) out.push({ docId: e.id, docTitle: e.title, idx, h });
+    });
+  }
+  out.sort((a, b) => (a.h.srs ? a.h.srs.due : 0) - (b.h.srs ? b.h.srs.due : 0));
+  return out;
+}
+function updateReviewBadge() {
+  const n = dueItems().length;
+  el.btnReview.classList.toggle('hidden', n === 0);
+  el.reviewCount.textContent = n > 99 ? '99+' : n;
+}
+const FUNC_SKIP = /^(the|and|for|that|this|with|from|have|been|were|are|was|which|their|these|those|such|than|then|also|into|over|when|what|will|would|could|should|about|there|where|between|because|however|therefore)$/i;
+function makeCloze(text) {
+  const parts = text.split(/(\s+)/);        // keep whitespace tokens so we can rebuild
+  const cand = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (/^\s*$/.test(parts[i])) continue;
+    const w = parts[i];
+    if (w.indexOf('(ref)') > -1 || w.indexOf('[math]') > -1) continue;
+    const m = w.match(/^([^\p{L}\p{N}]*)([\p{L}\p{N}][\p{L}\p{N}'’-]*)([^\p{L}\p{N}]*)$/u);
+    if (!m) continue;
+    const core = m[2];
+    if (core.length < 4 || FUNC_SKIP.test(core)) continue;
+    if (i <= 1) continue;                    // keep the opening word as a cue
+    let score = core.length;
+    if (!COMMON.has(core.toLowerCase())) score += 6;
+    if (/\d/.test(core)) score += 4;
+    if (/^[A-Z]{2,}$/.test(core)) score += 3;
+    else if (/^[A-Z]/.test(core)) score += 1;
+    cand.push({ i, core, pre: m[1], post: m[3], score });
+  }
+  if (!cand.length) return null;
+  cand.sort((a, b) => b.score - a.score);
+  const nBlanks = text.split(/\s+/).length >= 16 ? 2 : 1;
+  const chosen = cand.slice(0, nBlanks);
+  const byIdx = new Map(chosen.map(c => [c.i, c]));
+  let html = '';
+  for (let i = 0; i < parts.length; i++) {
+    if (/^\s*$/.test(parts[i])) { html += parts[i] ? ' ' : ''; continue; }
+    const c = byIdx.get(i);
+    if (c) {
+      const width = Math.min(12, Math.max(4, c.core.length));
+      html += escHtml(c.pre) + `<span class="blank">${' '.repeat(width)}</span>` + escHtml(c.post);
+    } else html += escHtml(parts[i]);
+  }
+  return { html, answers: chosen.sort((a, b) => a.i - b.i).map(c => c.core) };
+}
+function answerHtml(text, answers) {
+  if (!answers || !answers.length) return escHtml(text);
+  let out = escHtml(text);
+  for (const a of answers) {
+    // unicode-aware boundaries so possessives, hyphens, and accents highlight;
+    // g flag so a repeated answer word is marked at every occurrence
+    const esc = a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp('(^|[^\\p{L}\\p{N}])(' + esc + ')(?![\\p{L}\\p{N}])', 'gu'),
+      (_m, pre, w) => pre + '<span class="hit">' + w + '</span>');
+  }
+  return out;
+}
+
+let review = null;   // { deck, pos, revealed, done, hit }
+function startReview(deck, label) {
+  deck = deck.filter(c => c && c.h && c.h.text);
+  if (!deck.length) { toast('Nothing to review yet. Save sentences with h while reading.'); return; }
+  if (state.playing) pause();
+  closeDrawers();
+  el.recapModal.classList.add('hidden');
+  review = { deck: deck.slice(0, REVIEW_CAP), pos: 0, revealed: false, done: 0, hit: 0, label: label || '' };
+  el.reviewModal.classList.remove('hidden');
+  renderCard();
+}
+function renderCard() {
+  const card = review.deck[review.pos];
+  const h = card.h;
+  el.reviewProgress.textContent = (review.pos + 1) + ' / ' + review.deck.length;
+  el.reviewSec.textContent = [card.docTitle, h.sec].filter(Boolean).join(' · ').slice(0, 60);
+  const cloze = settings.reviewMode === 'cloze' ? makeCloze(h.text) : null;
+  if (cloze) {
+    el.reviewPrompt.innerHTML = cloze.html;
+    el.reviewCue.textContent = 'Say the missing word' + (cloze.answers.length > 1 ? 's' : '') + ', then reveal.';
+    review.answers = cloze.answers;
+  } else {
+    el.reviewPrompt.innerHTML = '<span class="recallcue">' + escHtml(h.text.split(/\s+/).slice(0, 4).join(' ')) + ' …</span>';
+    el.reviewCue.textContent = 'Recall the whole claim, then reveal.';
+    review.answers = null;
+  }
+  el.reviewAnswer.innerHTML = answerHtml(h.text, review.answers);
+  el.reviewAnswer.classList.add('hidden');
+  el.reviewGrade.classList.add('hidden');
+  el.reviewReveal.classList.remove('hidden');
+  review.revealed = false;
+}
+function revealCard() {
+  if (!review || review.revealed) return;
+  el.reviewAnswer.classList.remove('hidden');
+  el.reviewGrade.classList.remove('hidden');
+  el.reviewReveal.classList.add('hidden');
+  review.revealed = true;
+}
+function gradeHl(docId, text, good) {
+  // key by text, not array index: a background sync merge can reorder or drop
+  // items in the doc's highlight array between deck-build and grading
+  const hls = readHls(docId);
+  const h = hls.find(x => x.text === text);
+  if (!h) return true;                 // already deleted/merged away: nothing to persist
+  gradeSrs(h, good);
+  try { LS.setItem('saccade.hl.' + docId, JSON.stringify(hls)); }
+  catch (e) { return false; }          // quota: the reschedule did not save
+  schedulePush();
+  return true;
+}
+function gradeCard(good) {
+  if (!review || !review.revealed) return;
+  const card = review.deck[review.pos];
+  if (!gradeHl(card.docId, card.h.text, good)) {
+    toast('Storage full: could not save this card. Free up space and try again.', 3600);
+    return;
+  }
+  review.done++;
+  if (good) review.hit++;
+  review.pos++;
+  if (review.pos >= review.deck.length) endReview();
+  else renderCard();
+}
+function endReview() {
+  const r = review;
+  review = null;
+  el.reviewModal.classList.add('hidden');
+  updateReviewBadge();
+  if (state.doc && !el.drawerNotes.classList.contains('hidden')) renderNotes();
+  if (r && r.done) {
+    const pct = Math.round(100 * r.hit / r.done);
+    toast('Recalled ' + r.hit + ' of ' + r.done + ' (' + pct + '%). Missed cards come back sooner.', 3600);
+  }
+}
+function reviewDoc() {
+  if (!state.doc || state.doc.ephemeral) { toast('Open a document to review its notes.'); return; }
+  const id = state.doc.id;
+  startReview(getHls().map((h, idx) => ({ docId: id, docTitle: '', idx, h })), 'doc');
 }
 
 /* ---------------- library / persistence ---------------- */
@@ -1010,12 +1192,20 @@ function persistDoc() {
   try {
     LS.setItem('saccade.doc.' + d.id, JSON.stringify({ title: d.title, blocks: d.blocks }));
     let ix = libIndex().filter(e => e.id !== d.id);
-    ix.unshift({ id: d.id, title: d.title, words: state.tokens.length, last: Date.now() });
-    while (ix.length > 20) {
-      // cache eviction, not user intent: drop the doc body but keep the tiny
-      // position and highlight records, and do NOT tombstone
-      const rm = ix.pop();
-      LS.removeItem('saccade.doc.' + rm.id);
+    ix.unshift({ id: d.id, title: d.title, words: state.tokens.length, last: Date.now(), bodyless: false });
+    // cache eviction, not user intent: past the 20 most-recent docs, drop only
+    // the body. Keep the lib entry so positions, notes, and the review schedule
+    // stay visible and keep coming due. Hard-cap the index so it cannot grow forever.
+    for (let i = 20; i < ix.length; i++) {
+      if (LS.getItem('saccade.doc.' + ix[i].id)) { LS.removeItem('saccade.doc.' + ix[i].id); ix[i].bodyless = true; }
+    }
+    if (ix.length > 300) {
+      for (const rm of ix.slice(300)) {
+        LS.removeItem('saccade.doc.' + rm.id);
+        LS.removeItem('saccade.pos.' + rm.id);
+        LS.removeItem('saccade.hl.' + rm.id);
+      }
+      ix = ix.slice(0, 300);
     }
     LS.setItem('saccade.lib', JSON.stringify(ix));
     LS.setItem('saccade.last', d.id);
@@ -1063,9 +1253,11 @@ function renderLib() {
   el.libList.innerHTML = ix.map(e => {
     let pct = 0;
     try { pct = (JSON.parse(LS.getItem('saccade.pos.' + e.id) || '{}').pct) || 0; } catch (err) {}
-    return `<div class="libitem${e.remoteOnly ? ' remoteonly' : ''}" data-id="${e.id}">
+    const noBody = e.remoteOnly || e.bodyless;
+    const tag = e.remoteOnly ? ' &#183; text on other device' : (e.bodyless ? ' &#183; reload the file to read' : '');
+    return `<div class="libitem${noBody ? ' remoteonly' : ''}" data-id="${e.id}">
       <div class="t">${escHtml(e.title)}</div>
-      <div class="m"><span>${fmtWords(e.words)} words &#183; ${pct}%${e.remoteOnly ? ' &#183; text on other device' : ''}</span><span class="del" data-id="${e.id}">delete</span></div>
+      <div class="m"><span>${fmtWords(e.words)} words &#183; ${pct}%${tag}</span><span class="del" data-id="${e.id}">delete</span></div>
     </div>`;
   }).join('') || '<p style="color:var(--dim);font-size:13px">Nothing here yet.</p>';
 }
@@ -1244,6 +1436,7 @@ function syncInputs() {
   el.setRefs.value = settings.refs;
   el.setSpeedMode.value = settings.speedMode;
   el.setDailyGoal.value = settings.dailyGoal;
+  el.setReviewMode.value = settings.reviewMode;
   el.chipPass1.classList.toggle('on', !!settings.firstPass);
   el.wpmVal.textContent = settings.wpm;
   syncSpeedModeUi();
@@ -1295,6 +1488,7 @@ function closeAll() {
   el.helpModal.classList.add('hidden');
   el.recapModal.classList.add('hidden');
   el.statsModal.classList.add('hidden');
+  if (review) endReview();
   document.body.classList.remove('focusmode');
 }
 
@@ -1322,6 +1516,8 @@ el.btnNotes.addEventListener('click', () => {
   toggleDrawer(el.drawerNotes);
 });
 el.btnReplayNotes.addEventListener('click', () => { closeDrawers(); replayNotes(); });
+el.btnReviewDoc.addEventListener('click', reviewDoc);
+el.btnReview.addEventListener('click', () => startReview(dueItems(), 'due'));
 el.btnCopyNotes.addEventListener('click', copyNotes);
 let clearArmed = null;
 el.btnClearNotes.addEventListener('click', () => {
@@ -1367,6 +1563,11 @@ el.wordsToday.addEventListener('click', showStats);
 el.btnStatsClose.addEventListener('click', () => el.statsModal.classList.add('hidden'));
 el.btnRecapClose.addEventListener('click', () => el.recapModal.classList.add('hidden'));
 el.btnRecapReplay.addEventListener('click', replayNotes);
+el.btnRecapReview.addEventListener('click', () => { el.recapModal.classList.add('hidden'); reviewDoc(); });
+el.reviewReveal.addEventListener('click', revealCard);
+el.reviewAgain.addEventListener('click', () => gradeCard(false));
+el.reviewGood.addEventListener('click', () => gradeCard(true));
+el.reviewQuit.addEventListener('click', endReview);
 [el.helpModal, el.statsModal, el.recapModal].forEach(m =>
   m.addEventListener('click', e => { if (e.target === m) m.classList.add('hidden'); }));
 
@@ -1463,7 +1664,7 @@ el.libList.addEventListener('click', e => {
   try {
     const d = JSON.parse(LS.getItem('saccade.doc.' + item.dataset.id));
     if (d) openDoc({ id: item.dataset.id, title: d.title, blocks: d.blocks });
-    else toast('This document synced without its text (too large). Open it on the original device or load the file again.', 5000);
+    else toast('The full text is not stored on this device (older document or synced without its body). Load the file again to reopen it; your notes and place are kept.', 5500);
   } catch (err) { toast('Could not open that document.'); }
 });
 
@@ -1516,6 +1717,7 @@ bindSetting(el.setMath, 'math', 'retok');
 bindSetting(el.setRefs, 'refs', 'retok');
 bindSetting(el.setSpeedMode, 'speedMode', 'speedmode');
 bindSetting(el.setDailyGoal, 'dailyGoal', 'goal', i => parseInt(i.value, 10));
+bindSetting(el.setReviewMode, 'reviewMode', 'none');
 
 /* keyboard */
 const PLAYBACK_KEYS = [' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '0', 'h', 'b', 'f', 'r'];
@@ -1523,6 +1725,14 @@ document.addEventListener('keydown', e => {
   if (e.target && e.target.matches && e.target.matches('input, textarea, select')) return;
   if (!el.breakOverlay.classList.contains('hidden')) {
     if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); endBreak(true); }
+    return;
+  }
+  if (!el.reviewModal.classList.contains('hidden')) {
+    if (e.repeat || !review) return;   // a held Space must not reveal then grade in one press
+    if (e.key === 'Escape') { e.preventDefault(); endReview(); }
+    else if (!review.revealed && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); revealCard(); }
+    else if (review.revealed && (e.key === '1' || e.key === 'ArrowLeft')) { e.preventDefault(); gradeCard(false); }
+    else if (review.revealed && (e.key === '2' || e.key === 'ArrowRight')) { e.preventDefault(); gradeCard(true); }
     return;
   }
   const modal = [el.recapModal, el.statsModal, el.helpModal].find(m => !m.classList.contains('hidden'));
@@ -1550,6 +1760,7 @@ document.addEventListener('keydown', e => {
       toggleDrawer(el.drawerNotes);
       break;
     case 's': toggleDrawer(el.drawerSettings); break;
+    case 'v': startReview(dueItems(), 'due'); break;
     case '/': e.preventDefault(); if (el.drawerToc.classList.contains('hidden')) toggleDrawer(el.drawerToc); el.searchInput.focus(); break;
     case '?': el.helpModal.classList.toggle('hidden'); break;
     case 'Escape': closeAll(); break;
@@ -1627,7 +1838,7 @@ function syncDisconnect() {
   syncUiUpdate();
   toast('Sync disconnected. Everything stays on this device.');
 }
-function collectPayload() {
+function collectPayload(capForGist = true) {
   const lib = libIndex();
   const payload = { v: 1, at: Date.now(), lib, docs: {}, pos: {}, hl: {}, days, dead, statsToday: { d: stats.d, w: stats.w } };
   for (const e of lib) {
@@ -1638,7 +1849,8 @@ function collectPayload() {
     } catch (err) { /* skip corrupt entries */ }
   }
   let body = JSON.stringify(payload);
-  if (body.length > 800000) {
+  // a local backup keeps every doc body; only the gist push sheds bodies to fit
+  if (capForGist && body.length > 800000) {
     // keep positions and notes for everything; shed the largest doc bodies
     const sized = lib.map(e => ({ id: e.id, n: (JSON.stringify(payload.docs[e.id]) || '').length }))
       .sort((a, b) => b.n - a.n);
@@ -1708,14 +1920,17 @@ async function syncPull(force) {
     return false;
   }
 }
-function mergeRemote(p) {
+function mergeRemote(p, opts) {
+  const restore = opts && opts.restore;   // manual backup import: additive only
   const localIx = libIndex();
   const map = new Map(localIx.map(e => [e.id, e]));
   const curId = state.doc && !state.doc.ephemeral ? state.doc.id : null;
   const curLastBefore = curId && map.get(curId) ? (map.get(curId).last || 0) : 0;
   let changed = false;
-  // union tombstones first (newest timestamp wins), then honor them
-  if (p.dead) {
+  // union tombstones first (newest timestamp wins), then honor them. A manual
+  // restore skips this so an old backup's deletions cannot wipe current data;
+  // this device's own local tombstones still apply below.
+  if (!restore && p.dead) {
     for (const id in (p.dead.docs || {})) {
       if ((p.dead.docs[id] || 0) > (dead.docs[id] || 0)) dead.docs[id] = p.dead.docs[id];
     }
@@ -1757,15 +1972,19 @@ function mergeRemote(p) {
     if (p.hl && p.hl[re.id] && p.hl[re.id].length) {
       try {
         const cur = JSON.parse(LS.getItem('saccade.hl.' + re.id) || '[]');
-        const seen = new Set(cur.map(h => h.text));
+        const byText = new Map(cur.map(h => [h.text, h]));
         const deadHl = dead.hl[re.id] || {};
-        let added = false;
+        let touched = false;
         for (const h of p.hl[re.id]) {
           const ts = deadHl[hashText(h.text)];
           if (ts && ts >= (h.added || 0)) continue;   // deleted after it was saved
-          if (!seen.has(h.text)) { cur.push(h); added = true; }
+          const local = byText.get(h.text);
+          if (!local) { cur.push(h); byText.set(h.text, h); touched = true; }
+          else if (h.srs && (h.srs.last || 0) > (local.srs ? (local.srs.last || 0) : -1)) {
+            local.srs = h.srs; touched = true;         // adopt the newer review schedule
+          }
         }
-        if (added) {
+        if (touched) {
           cur.sort((a, b) => (a.added || 0) - (b.added || 0));
           LS.setItem('saccade.hl.' + re.id, JSON.stringify(cur));
           changed = true;
@@ -1805,8 +2024,10 @@ function mergeRemote(p) {
   LS.setItem('saccade.days', JSON.stringify(days));
   updateWordsToday();
   updateNoteCount();
+  updateReviewBadge();
   // if the other device read further in the currently open doc, follow it
-  if (curId && !state.playing && p.pos && p.pos[curId]) {
+  // (never on a manual restore: that would yank the reader mid-session)
+  if (!restore && curId && !state.playing && p.pos && p.pos[curId]) {
     const re = (p.lib || []).find(e => e.id === curId);
     if (re && (re.last || 0) > curLastBefore) {
       const pk = p.pos[curId];
@@ -1822,6 +2043,65 @@ function mergeRemote(p) {
 el.btnSyncConnect.addEventListener('click', syncConnect);
 el.btnSyncNow.addEventListener('click', () => { syncPull(true).then(() => syncPush()); });
 el.btnSyncOffBtn.addEventListener('click', syncDisconnect);
+
+/* ---------------- backup / restore (local durability) ---------------- */
+function copyBackupFallback(json) {
+  const done = () => toast('Backup copied to the clipboard. Paste it into a note or file to keep it.', 5000);
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(json).then(done).catch(() => fallbackCopy(json, done));
+  else fallbackCopy(json, done);
+}
+function exportData() {
+  let json;
+  try { json = collectPayload(false); } catch (e) { toast('Backup failed: ' + e.message, 4000); return; }
+  const fname = 'saccade-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  // installed iOS PWAs ignore <a download> and click() silently no-ops, so prefer
+  // the share sheet there, which iOS honors, and only claim success on a real save path
+  if (standalone && navigator.canShare) {
+    try {
+      const file = new File([json], fname, { type: 'application/json' });
+      if (navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: fname })
+          .then(() => toast('Backup ready in the share sheet.'))
+          .catch(err => { if (!err || err.name !== 'AbortError') copyBackupFallback(json); });
+        return;
+      }
+    } catch (e) { /* fall through */ }
+  }
+  if (!('download' in document.createElement('a')) || standalone) { copyBackupFallback(json); return; }
+  try {
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast('Backup downloaded.');
+  } catch (e) { copyBackupFallback(json); }
+}
+async function importData(file) {
+  if (!file) return;
+  try {
+    const p = JSON.parse(await file.text());
+    if (!p || !p.v) throw new Error('not a Saccade backup file');
+    mergeRemote(p, { restore: true });   // additive: never applies the backup's deletions or yanks the reader
+    updateReviewBadge();
+    updateNoteCount();
+    if (!el.drawerLibrary.classList.contains('hidden')) renderLib();
+    toast('Backup merged. Your existing data was kept.');
+  } catch (e) { toast('Restore failed: ' + e.message, 4500); }
+}
+el.btnExport.addEventListener('click', exportData);
+el.importInput.addEventListener('change', () => { importData(el.importInput.files[0]); el.importInput.value = ''; });
+function updateInstallNote() {
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  if (standalone) { el.installNote.textContent = 'Installed as an app. It works offline.'; return; }
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  el.installNote.innerHTML = ios
+    ? 'On iPad or iPhone: tap Share, then <b>Add to Home Screen</b> to install it as an offline app and stop Safari from clearing your data.'
+    : 'Install it (address-bar install icon, or Add to Home Screen) so the browser does not clear your library.';
+}
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
@@ -1852,6 +2132,9 @@ function init() {
   }
   if (!opened) showLoader();
   syncUiUpdate();
+  updateReviewBadge();
+  updateInstallNote();
+  if (dueItems().length) toast(dueItems().length + ' card' + (dueItems().length === 1 ? '' : 's') + ' due for review. Press v or tap the ↻.', 4000);
   if (sync) syncPull(true);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -1863,5 +2146,8 @@ init();
 window.Saccade = {
   state, settings, openDoc, finishLoad, parsePlain, extractPdf, tokenizeDoc,
   play, pause, seek, handleFile, markCurrent, getHls, replayNotes, notesMarkdown,
-  collectPayload, mergeRemote, runSearch, showStats, buildSections
+  collectPayload, mergeRemote, runSearch, showStats, buildSections,
+  makeCloze, gradeSrs, initSrs, dueItems, startReview, reviewDoc, gradeCard, revealCard,
+  updateReviewBadge, exportData, importData,
+  get review() { return review; }
 };

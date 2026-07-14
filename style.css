@@ -70,10 +70,16 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   color: var(--dim); display: grid; place-items: center; position: relative;
 }
 .iconbtn:hover { background: var(--panel2); color: var(--text); }
-#noteCount {
+#noteCount, #reviewCount {
   position: absolute; top: 0; right: 0; font-size: 10px; font-weight: 700;
   color: var(--accent); min-width: 12px; line-height: 1;
 }
+#reviewCount {
+  top: -1px; right: -1px; background: var(--accent); color: #fff;
+  border-radius: 8px; padding: 1px 4px; min-width: 0;
+}
+.iconbtn.accent { color: var(--accent); }
+.iconbtn.accent:hover { background: var(--panel2); }
 #wordsToday.goal-hit { color: var(--accent); }
 
 /* ---------- loader ---------- */
@@ -305,6 +311,41 @@ body.noguides .guide .tick { opacity: 0; }
 #statsBody .goalline { stroke: var(--dim); stroke-dasharray: 3 3; stroke-width: 1; }
 
 #backdrop { position: fixed; inset: 0; z-index: 35; background: transparent; }
+
+/* ---------- review (active recall) ---------- */
+.modal-inner.review { width: min(560px, 100%); text-align: center; }
+.review-top {
+  display: flex; justify-content: space-between; font-size: 12px; color: var(--dim);
+  margin-bottom: 18px; gap: 10px;
+}
+.review-top span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#reviewPrompt {
+  font-family: var(--font-word); font-size: clamp(19px, 3.4vw, 25px); line-height: 1.6;
+  min-height: 2.6em; display: flex; align-items: center; justify-content: center;
+  padding: 6px 2px;
+}
+#reviewPrompt .blank {
+  display: inline-block; border-bottom: 2px solid var(--accent); color: transparent;
+  margin: 0 2px; min-width: 2.4em; user-select: none;
+}
+#reviewPrompt .recallcue { color: var(--dim); }
+.review-cue { color: var(--dim); font-size: 13px; margin: 12px 0 16px; }
+#reviewAnswer {
+  font-family: var(--font-word); font-size: clamp(18px, 3.2vw, 23px); line-height: 1.6;
+  padding: 14px; margin-bottom: 16px; border-radius: 10px;
+  background: var(--panel2); border: 1px solid var(--edge);
+}
+#reviewAnswer .hit { color: var(--accent); font-weight: 700; }
+.review-grade { display: flex; gap: 10px; margin-bottom: 10px; }
+.review-grade .btn { flex: 1; padding: 14px; font-size: 15px; }
+.btn.grade-again { border-color: var(--accent); color: var(--accent); }
+.btn.grade-good { background: var(--accent); color: #fff; border-color: transparent; font-weight: 600; }
+.btn.ghost { background: none; border-color: transparent; color: var(--dim); font-size: 13px; }
+.btn.ghost:hover { color: var(--text); }
+.btn.center { text-align: center; }
+@media (pointer: coarse) {
+  .review-grade .btn { padding: 16px; }
+}
 
 /* ---------- modals ---------- */
 .modal {

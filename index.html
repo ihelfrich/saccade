@@ -22,6 +22,7 @@
   </div>
   <div class="topbar-right">
     <button id="wordsToday" title="Reading stats"></button>
+    <button class="iconbtn accent hidden" id="btnReview" title="Review due cards (v)">&#8635;<span id="reviewCount"></span></button>
     <button class="iconbtn" id="btnLibrary" title="Library (l)">&#9776;</button>
     <button class="iconbtn" id="btnToc" title="Contents and search (t)">&#167;</button>
     <button class="iconbtn" id="btnNotes" title="Notes (n)">&#9998;<span id="noteCount"></span></button>
@@ -155,8 +156,23 @@
     </label>
   </div>
 
+  <div class="set-group"><h3>Review</h3>
+    <label>Recall format
+      <select id="setReviewMode"><option value="cloze">Fill the blank</option><option value="recall">Free recall</option></select>
+    </label>
+    <p class="set-note">Saved notes come back as retrieval practice on a spaced schedule. Testing yourself beats re-reading for memory; free recall is harder and stickier, fill-the-blank is faster.</p>
+  </div>
+
+  <div class="set-group"><h3>Your data</h3>
+    <p class="set-note">Everything lives in this browser only. Back it up so a cleared cache cannot lose your library and notes.</p>
+    <button class="btn full" id="btnExport">Download backup (.json)</button>
+    <label class="btn full center" for="importInput">Restore from backup</label>
+    <input type="file" id="importInput" accept="application/json,.json" hidden>
+    <p class="set-note" id="installNote"></p>
+  </div>
+
   <div class="set-group"><h3>Sync between devices</h3>
-    <p class="set-note">Optional. Keeps your library, positions, and notes in a private GitHub Gist so Mac and iPad stay in step. Paste a GitHub token with only the <b>gist</b> scope. The token never leaves this device.</p>
+    <p class="set-note">Optional. Keeps your library, positions, notes, and review schedule in a private GitHub Gist so Mac and iPad stay in step. Paste a GitHub token with only the <b>gist</b> scope. The token never leaves this device.</p>
     <div id="syncOff">
       <input type="password" id="syncTokenInput" placeholder="GitHub token (gist scope)" autocomplete="off">
       <button class="btn primary full" id="btnSyncConnect">Connect sync</button>
@@ -187,9 +203,10 @@
 <!-- Notes drawer -->
 <aside id="drawerNotes" class="drawer right hidden">
   <h2>Notes</h2>
-  <p class="set-note">Press h (or hold the word on touch) while reading to save the current sentence here.</p>
+  <p class="set-note">Press h (or hold the word on touch) while reading to save a sentence. <b>Review</b> tests you on them instead of just re-reading, and they come back on a spaced schedule so they stick.</p>
   <div class="note-actions">
-    <button class="btn" id="btnReplayNotes" title="Re-read your saved sentences as RSVP">Replay</button>
+    <button class="btn primary" id="btnReviewDoc" title="Test yourself on these notes">Review</button>
+    <button class="btn" id="btnReplayNotes" title="Re-stream your saved sentences as RSVP">Re-stream</button>
     <button class="btn" id="btnCopyNotes" title="Copy all notes as markdown">Copy md</button>
     <button class="btn" id="btnClearNotes">Clear</button>
   </div>
@@ -211,9 +228,11 @@
       <tr><td>f</td><td>focus mode (hide everything but the word)</td></tr>
       <tr><td>r</td><td>full text view</td></tr>
       <tr><td>/</td><td>search in document</td></tr>
+      <tr><td>v</td><td>review due cards (active recall)</td></tr>
       <tr><td>t / l / n / s</td><td>contents / library / notes / settings</td></tr>
       <tr><td>esc</td><td>close panels, exit focus</td></tr>
     </table>
+    <p><b>Notes are for retrieval, not rereading.</b> Save sentences with h, then use Review: the app tests you (fill-the-blank or free recall) and reschedules each card by how well you did, so it resurfaces before you forget it.</p>
     <p>On touch: tap the center to play or pause, tap the left or right edge to jump a sentence, hold the word to save the sentence to notes, swipe for sentence jumps.</p>
     <p>Pause any time you feel lost: the full sentence appears with your place marked. Position is saved automatically.</p>
     <p><b>iPad:</b> open this site in Safari, tap Share, then Add to Home Screen. It becomes a full-screen app and works offline. Turn on sync in settings to carry your library and positions between devices.</p>
@@ -236,9 +255,26 @@
     <h2>Finished</h2>
     <div id="recapBody"></div>
     <div class="note-actions">
-      <button class="btn primary" id="btnRecapReplay">Replay highlights</button>
+      <button class="btn primary" id="btnRecapReview">Test recall</button>
+      <button class="btn" id="btnRecapReplay">Re-stream</button>
       <button class="btn" id="btnRecapClose">Close</button>
     </div>
+  </div>
+</div>
+
+<!-- Review (active recall) overlay -->
+<div id="reviewModal" class="modal hidden">
+  <div class="modal-inner review">
+    <div class="review-top"><span id="reviewProgress"></span><span id="reviewSec"></span></div>
+    <div id="reviewPrompt"></div>
+    <p id="reviewCue" class="review-cue"></p>
+    <div id="reviewAnswer" class="hidden"></div>
+    <button class="btn primary full" id="reviewReveal">Reveal (space)</button>
+    <div id="reviewGrade" class="review-grade hidden">
+      <button class="btn grade-again" id="reviewAgain">Missed (1)</button>
+      <button class="btn grade-good" id="reviewGood">Got it (2)</button>
+    </div>
+    <button class="btn ghost full" id="reviewQuit">End review (esc)</button>
   </div>
 </div>
 
