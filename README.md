@@ -4,6 +4,20 @@ An RSVP speed reader with ORP highlighting, built for academic papers and for ac
 
 Words arrive one at a time at a fixed point on screen, with the optimal recognition point letter marked in red, so your eyes stop making saccades between words. Pacing is adaptive rather than metronomic: long, rare, and complex words, numbers, acronyms, and equations stay up longer; the display breathes at commas, sentence ends, and paragraph breaks; a short warm-up ramp eases you back in every time you resume. An optional auto mode adjusts speed for you: rewinds slow it down, cruising nudges it up.
 
+## Figures, tables, and equations
+
+RSVP can't stream a regression table or an event-study figure; those are 2D, and the finding usually lives in them. So the word stream stops on them. On a PDF, Saccade detects figure and table captions, lifts the actual image out of the page (rendered client-side with pdf.js, never uploaded), and shows it as a still card your eyes can rest and move over. Display equations show as their own card too. Tap or press space to continue; press g to jump straight to the next figure or table. Save an exhibit to notes like any sentence.
+
+## Thinking, not just remembering
+
+Retention tests recall of single sentences. The connection drill (press c) does the other half: it pairs two of your saved notes from *different* papers that share some ground but aren't near-duplicates, and asks you to write the link in your own words. The app never writes it for you; the point is that you generate it. What you write becomes a Synthesis note that itself comes back on the spaced schedule.
+
+## Built for getting started and getting back
+
+- **One section**: a bounded first step that reads to the end of the current section and stops. Lower the activation cost, then decide to keep going.
+- **Where was I**: reopen a document after a real gap and a card reinstates the section, the last sentence, and your last note before anything moves.
+- Start from any section in the contents panel; you don't have to read front to back.
+
 ## Retention, not just speed
 
 - **Highlights.** Press h (or hold the word on touch) to save the current sentence to notes, tagged with its section. Jump back to any saved sentence, copy everything as markdown, or replay just your highlights as a fast review pass. Finishing a document shows a recap with one tap into that replay.

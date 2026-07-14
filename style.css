@@ -346,6 +346,73 @@ body.noguides .guide .tick { opacity: 0; }
 @media (pointer: coarse) {
   .review-grade .btn { padding: 16px; }
 }
+#reviewWrite {
+  width: 100%; min-height: 92px; resize: vertical; padding: 11px 12px; margin-bottom: 12px;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--edge);
+  border-radius: 10px; font: 16px/1.5 var(--font-word);
+}
+#reviewWrite:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.seed {
+  text-align: left; background: var(--panel2); border: 1px solid var(--edge);
+  border-radius: 10px; padding: 12px 14px; font-size: 15px; line-height: 1.55; margin: 6px 0;
+}
+.seed-src { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 4px; }
+.seed-vs { text-align: center; color: var(--accent); font-weight: 700; font-size: 18px; margin: 2px 0; }
+
+/* ---------- rest cards (figures / tables / equations) ---------- */
+#restcard {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  width: 100%; max-width: min(860px, 94vw); margin: 0 auto; padding: 4px clamp(8px, 3vw, 20px);
+  max-height: 60vh; overflow: auto;
+}
+.rest-kind {
+  font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--accent);
+  font-weight: 700; margin-bottom: 8px;
+}
+.rest-img {
+  max-width: 100%; max-height: 46vh; object-fit: contain; border-radius: 8px;
+  background: #fff; border: 1px solid var(--edge);
+}
+.rest-math {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: clamp(18px, 3.4vw, 26px); line-height: 1.5; text-align: center;
+  padding: 14px 10px; color: var(--text); overflow-x: auto; max-width: 100%;
+}
+.rest-cap {
+  font-size: 14px; line-height: 1.55; color: var(--dim); margin-top: 10px;
+  max-width: 62ch; text-align: left;
+}
+.rest-missing { color: var(--dim); font-size: 14px; padding: 20px; text-align: center; }
+#restCont {
+  position: absolute; bottom: 6px; left: 0; right: 0; text-align: center;
+  color: var(--accent); font-size: 13px; font-weight: 600; pointer-events: none;
+}
+
+/* exhibit ticks on the scrubber */
+.scrub-row { position: relative; }
+#exhibitTicks { position: absolute; left: 0; right: 0; top: 0; height: 100%; pointer-events: none; }
+.extick {
+  position: absolute; width: 2px; height: 9px; top: 50%; transform: translate(-50%, -50%);
+  background: var(--accent); opacity: .55; border-radius: 1px;
+}
+
+/* reader-view exhibits */
+.rr-exhibit { border: 1px solid var(--edge); border-radius: 10px; padding: 14px; margin: 0 0 1em; background: var(--panel); }
+.rr-kind { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--accent); font-weight: 700; margin-bottom: 8px; }
+.rr-img { max-width: 100%; border-radius: 6px; background: #fff; border: 1px solid var(--edge); }
+.rr-math { font-family: ui-monospace, Menlo, monospace; font-size: 1.05em; padding: 8px 0; overflow-x: auto; }
+.rr-cap { font-size: .92em; color: var(--dim); margin-top: 8px; }
+.rr-missing { color: var(--dim); font-size: .9em; }
+
+.libitem.synth { border-color: var(--accent); }
+.libitem.synth .t { color: var(--accent); }
+
+/* re-entry card */
+.reentry-ago { color: var(--dim); font-size: 13px; margin-bottom: 12px; }
+.reentry-sec { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 6px; }
+.reentry-tail { font-family: var(--font-word); font-size: 17px; line-height: 1.5; padding: 12px 0; border-top: 1px solid var(--edge); }
+.reentry-note { font-size: 13px; color: var(--dim); margin: 10px 0; padding-top: 10px; border-top: 1px solid var(--edge); }
+.reentry-note span { display: block; text-transform: uppercase; font-size: 10px; letter-spacing: .06em; margin-bottom: 3px; }
 
 /* ---------- modals ---------- */
 .modal {

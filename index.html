@@ -61,9 +61,11 @@
       <span id="pre"></span><span id="orp"></span><span id="post"></span>
     </div>
     <div id="chunkbox" class="hidden"></div>
+    <div id="restcard" class="hidden"></div>
     <div id="cardSub" class="hidden"></div>
     <div class="guide flip"><span class="tick"></span></div>
     <div id="markPulse">saved &#10004;</div>
+    <div id="restCont" class="hidden">tap or space to continue &#8250;</div>
     <div id="pauseHint">press space or tap to start</div>
   </div>
 
@@ -81,8 +83,9 @@
       <button class="ctl mark" id="btnMark" title="Save this sentence to notes (h)">&#9873;</button>
     </div>
     <div id="sectmap" title="Sections. Tap to jump."></div>
-    <div class="ctl-row">
+    <div class="ctl-row scrub-row">
       <input type="range" id="scrub" min="0" max="0" value="0" step="1">
+      <div id="exhibitTicks"></div>
     </div>
     <div class="ctl-row meta">
       <span class="wpm-group">
@@ -96,6 +99,7 @@
         <button class="chip" data-preset="read">Read</button>
         <button class="chip" data-preset="study">Study</button>
         <button class="chip" id="chipPass1" title="Headings and first sentences only">1st pass</button>
+        <button class="chip" id="btnOneSection" title="Read only to the end of this section, then stop">1 section</button>
       </span>
       <span class="right-meta">
         <button class="mini wide" id="btnReaderView" title="Full text view (r)">text</button>
@@ -229,9 +233,13 @@
       <tr><td>r</td><td>full text view</td></tr>
       <tr><td>/</td><td>search in document</td></tr>
       <tr><td>v</td><td>review due cards (active recall)</td></tr>
+      <tr><td>c</td><td>connect two ideas (creative drill)</td></tr>
+      <tr><td>g</td><td>jump to next figure / table (shift+g: previous)</td></tr>
       <tr><td>t / l / n / s</td><td>contents / library / notes / settings</td></tr>
       <tr><td>esc</td><td>close panels, exit focus</td></tr>
     </table>
+    <p><b>Figures, tables, and equations</b> stop the stream so your eyes can rest and move over them. Tap or press space to continue. On a PDF, Saccade lifts the actual figure and table images out of the page.</p>
+    <p><b>Connect (c)</b> pairs two of your saved notes from different papers and asks you to write the link. The app never writes it for you; that is the point. What you write becomes a note you review later.</p>
     <p><b>Notes are for retrieval, not rereading.</b> Save sentences with h, then use Review: the app tests you (fill-the-blank or free recall) and reschedules each card by how well you did, so it resurfaces before you forget it.</p>
     <p>On touch: tap the center to play or pause, tap the left or right edge to jump a sentence, hold the word to save the sentence to notes, swipe for sentence jumps.</p>
     <p>Pause any time you feel lost: the full sentence appears with your place marked. Position is saved automatically.</p>
@@ -268,13 +276,36 @@
     <div class="review-top"><span id="reviewProgress"></span><span id="reviewSec"></span></div>
     <div id="reviewPrompt"></div>
     <p id="reviewCue" class="review-cue"></p>
+    <textarea id="reviewWrite" class="hidden" placeholder="Write the link in your own words..." spellcheck="true"></textarea>
     <div id="reviewAnswer" class="hidden"></div>
     <button class="btn primary full" id="reviewReveal">Reveal (space)</button>
     <div id="reviewGrade" class="review-grade hidden">
       <button class="btn grade-again" id="reviewAgain">Missed (1)</button>
       <button class="btn grade-good" id="reviewGood">Got it (2)</button>
     </div>
-    <button class="btn ghost full" id="reviewQuit">End review (esc)</button>
+    <button class="btn primary full hidden" id="reviewSaveSynth">Save this connection</button>
+    <button class="btn ghost full" id="reviewQuit">End (esc)</button>
+  </div>
+</div>
+
+<!-- Section-stop micro-modal (tiny-start) -->
+<div id="sectionStopModal" class="modal hidden">
+  <div class="modal-inner narrow">
+    <h2>Section done</h2>
+    <p>You finished the section you started. Stopping here is a real win.</p>
+    <div class="note-actions">
+      <button class="btn primary" id="btnKeepGoing">Keep going</button>
+      <button class="btn" id="btnSectionDone">Done for now</button>
+    </div>
+  </div>
+</div>
+
+<!-- Re-entry "where was I" card -->
+<div id="reentryModal" class="modal hidden">
+  <div class="modal-inner">
+    <h2>Where you were</h2>
+    <div id="reentryBody"></div>
+    <button class="btn primary full" id="btnReentryResume">Resume here</button>
   </div>
 </div>
 

@@ -25,7 +25,9 @@ const el = {};
   'btnSyncOffBtn','syncStatus',
   'btnReview','reviewCount','btnReviewDoc','btnRecapReview','reviewModal','reviewProgress','reviewSec',
   'reviewPrompt','reviewCue','reviewAnswer','reviewReveal','reviewGrade','reviewAgain','reviewGood',
-  'reviewQuit','setReviewMode','btnExport','importInput','installNote'
+  'reviewQuit','setReviewMode','btnExport','importInput','installNote',
+  'restcard','restCont','sectionStopModal','btnKeepGoing','btnSectionDone','reentryModal','reentryBody',
+  'btnReentryResume','reviewWrite','reviewSaveSynth','btnOneSection','exhibitTicks'
 ].forEach(id => el[id] = document.getElementById(id));
 
 /* ---------------- settings ---------------- */
@@ -69,7 +71,9 @@ const state = {
   segEls: [],           // section map segment elements
   lastSec: -1,
   autoStreak: 0,        // tokens advanced since last rewind (auto speed)
-  finished: false
+  finished: false,
+  restPending: null,    // token index of a figure/table/equation card awaiting continue
+  sectionStop: null     // token index to auto-stop at (tiny-start "read one section")
 };
 
 /* ---------------- utilities ---------------- */
@@ -146,7 +150,8 @@ const REF_RE = /^(references|bibliography|works cited|literature cited)\b/i;
 function markReferences(blocks) {
   let inRef = false;
   for (const b of blocks) {
-    const t = b.text.trim();
+    if (REST_TYPES[b.type]) { b.ref = inRef; continue; }   // exhibits have no .text
+    const t = (b.text || '').trim();
     if (!inRef && REF_RE.test(t) && t.length < 60) {
       inRef = true;
       b.ref = true;
@@ -205,7 +210,8 @@ function linesFromItems(items) {
     }
     const hs = its.map(i => i.h).sort((a, b) => a - b);
     const size = hs[Math.floor(hs.length / 2)];
-    return { text: text.replace(/\s+/g, ' ').trim(), y: g.y, x: its[0].x, h: size, size, col: its[0].col || 0 };
+    const last = its[its.length - 1];
+    return { text: text.replace(/\s+/g, ' ').trim(), y: g.y, x: its[0].x, x1: last.x + (last.w || 0), h: size, size, col: its[0].col || 0 };
   }).filter(l => l.text);
 }
 async function extractPdf(buf, fallbackTitle) {
@@ -246,14 +252,57 @@ async function extractPdf(buf, fallbackTitle) {
     if (/^arxiv:\d{4}\.\d{4,5}/i.test(l.text)) continue;
     lines.push(l);
   }
-  pdf.destroy();
-  if (!lines.length) throw new Error('no extractable text; this may be a scanned PDF');
+  if (!lines.length) { pdf.destroy(); throw new Error('no extractable text; this may be a scanned PDF'); }
   const sizes = lines.map(l => l.size).sort((a, b) => a - b);
   const med = sizes[Math.floor(sizes.length / 2)] || 10;
+  const CAPTION = /^(fig(?:ure|\.)?|table|panel)\s*\.?\s*([0-9]{1,3}|[ivxl]{1,4}|[A-Z])\b/i;
+  const exhibits = [];   // {kind, label, caption, page, line} pending rasterization
   const blocks = [];
   let cur = '', prev = null;
   const flush = () => { const t = cur.trim(); if (t) blocks.push({ text: t.replace(/\s+/g, ' '), type: 'p' }); cur = ''; };
+  function looksLikeCaption(l) {
+    const m = l.text.match(CAPTION);
+    if (!m) return null;
+    // a real caption sets the label off with a separator (":" / "." / dash) or a
+    // capitalized title; running prose continues with a lowercase word ("Table 1 lists...")
+    const rest = l.text.slice(m[0].length);
+    const after = rest.trimStart();
+    const hasSep = /^\s*[:.–—-]/.test(rest);
+    if (!hasSep && /^[a-z]/.test(after)) return null;
+    const kind = /^t/i.test(m[1]) ? 'table' : 'figure';
+    const label = m[0].replace(/\s+/g, ' ').replace(/\.$/, '');
+    return { kind, label };
+  }
+  function isMathLine(l) {
+    const t = l.text;
+    if (t.length > 80 || /[.!?]$/.test(t)) return false;
+    // prose has natural-language words; a formula has almost none. Reject the moment
+    // it reads like a sentence, so inline stats ("...is -0.050 (p = 0.46)") stay prose.
+    const proseWords = (t.match(/\b[a-z]{3,}\b/gi) || []).length;
+    if (proseWords >= 2) return false;
+    let sym = 0;
+    for (const c of t) if ('=+−*/^_<>|≤≥≈≠∈∑∏∫√→∞αβγδθλμσφρπτΔΩ∂∇'.indexOf(c) >= 0) sym++;
+    const hasEqNo = /\(\s*\d{1,3}\s*\)\s*$/.test(t);
+    if (sym >= 2 && /[=<>]/.test(t)) return true;
+    if (hasEqNo && sym >= 2 && /[=<>+]/.test(t)) return true;
+    return false;
+  }
   for (const l of lines) {
+    const cap = looksLikeCaption(l);
+    if (cap) {
+      flush();
+      const blk = { type: cap.kind, label: cap.label, caption: l.text, page: l.page };
+      blocks.push(blk);
+      exhibits.push({ blk, line: l });
+      prev = l;
+      continue;
+    }
+    if (isMathLine(l)) {
+      flush();
+      blocks.push({ type: 'matheq', frag: l.text, label: 'Equation' });
+      prev = l;
+      continue;
+    }
     const wc = l.text.split(/\s+/).length;
     const isHead = l.size > med * 1.17 && wc <= 16 && /[A-Za-z]/.test(l.text);
     if (isHead) {
@@ -275,6 +324,11 @@ async function extractPdf(buf, fallbackTitle) {
   }
   flush();
   markReferences(blocks);
+
+  // rasterize figure/table regions (best-effort; a failed crop just leaves the caption card)
+  try { await rasterizeExhibits(pdf, exhibits, pageLines); } catch (e) { /* keep captions */ }
+  pdf.destroy();
+
   let title = metaTitle;
   if (!title) {
     const p1 = pageLines[0] || [];
@@ -282,6 +336,102 @@ async function extractPdf(buf, fallbackTitle) {
     title = (big && big.size > med * 1.2) ? big.text : (fallbackTitle || 'PDF document');
   }
   return { title: title.slice(0, 120), blocks };
+}
+async function rasterizeExhibits(pdf, exhibits, pageLines) {
+  if (!exhibits.length) return;
+  const MAX = 40;
+  const byPage = new Map();
+  for (const ex of exhibits.slice(0, MAX)) {
+    if (!byPage.has(ex.line.page)) byPage.set(ex.line.page, []);
+    byPage.get(ex.line.page).push(ex);
+  }
+  for (const [pageNo, exs] of byPage) {
+    let page, canvas;
+    try {
+      page = await pdf.getPage(pageNo);
+      // clamp scale so the canvas never exceeds the caps: then canvas == viewport
+      // exactly and a crop can never sample past the rendered region
+      const MAXW = 3000, MAXH = 4000;
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(2, MAXW / base.width, MAXH / base.height);
+      const vp = page.getViewport({ scale });
+      canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(vp.width);
+      canvas.height = Math.ceil(vp.height);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      const pls = pageLines[pageNo - 1] || [];
+      for (const ex of exs) {
+        const box = exhibitBbox(ex, pls, vp);   // in viewport (canvas) pixels
+        if (!box) continue;
+        const c2 = document.createElement('canvas');
+        c2.width = Math.max(1, Math.round(box.w));
+        c2.height = Math.max(1, Math.round(box.h));
+        c2.getContext('2d').drawImage(canvas, box.x, box.y, box.w, box.h, 0, 0, c2.width, c2.height);
+        const mime = ex.blk.type === 'table' ? 'image/png' : 'image/jpeg';
+        ex.blk.img = c2.toDataURL(mime, 0.85);
+        ex.blk.hasImg = true;
+      }
+    } catch (e) { /* this page failed; its captions still show */ }
+  }
+}
+function exhibitBbox(ex, pls, vp) {
+  const cap = ex.line;
+  // page box in PDF user space (scale- and rotation-independent, so band math is correct on rotated pages)
+  const bx0 = vp.viewBox[0], by0 = vp.viewBox[1];
+  const pageWpts = vp.viewBox[2] - vp.viewBox[0];
+  const pageHpts = vp.viewBox[3] - vp.viewBox[1];
+  const twoCol = pls.some(l => l.col === 1);
+  let x0, x1;
+  if (twoCol) {
+    x0 = cap.col === 0 ? bx0 + pageWpts * 0.05 : bx0 + pageWpts * 0.5;
+    x1 = cap.col === 0 ? bx0 + pageWpts * 0.5 : bx0 + pageWpts * 0.95;
+  } else { x0 = bx0 + pageWpts * 0.06; x1 = bx0 + pageWpts * 0.94; }
+  // find the exhibit band vertically (PDF y is bottom-up: larger y = higher)
+  let yTop, yBot;
+  const sameCol = pls.filter(l => l.col === cap.col && l !== cap);
+  if (ex.blk.type === 'figure') {
+    // graphics sit ABOVE the caption. Skip the figure's own short in-plot text
+    // (axis/legend labels) and anchor the top on the first full-width prose line.
+    const colW = x1 - x0;
+    const above = sameCol.filter(l => l.y > cap.y + cap.h * 0.5).sort((a, b) => a.y - b.y);
+    const prose = above.find(l => ((l.x1 || l.x) - l.x) > colW * 0.55 && l.text.split(/\s+/).length >= 6);
+    yBot = cap.y + cap.h * 1.2;
+    yTop = prose ? Math.min(prose.y + prose.h, cap.y + pageHpts * 0.6) : cap.y + pageHpts * 0.5;
+    if (yTop - yBot < pageHpts * 0.08) return null;   // no real gap: low confidence, keep caption only
+  } else {
+    // table rows sit BELOW the caption
+    const below = sameCol.filter(l => l.y < cap.y - cap.h * 0.5);
+    let bot = cap.y - pageHpts * 0.5;
+    if (below.length) {
+      below.sort((a, b) => b.y - a.y);
+      let last = cap.y;
+      for (const l of below) {
+        if (last - l.y > cap.h * 4) break;   // big gap ends the table
+        last = l.y;
+      }
+      bot = last - cap.h;
+    }
+    yTop = cap.y + cap.h * 0.4;
+    yBot = Math.max(bot, cap.y - pageHpts * 0.55);
+    if (yTop - yBot < pageHpts * 0.05) return null;
+  }
+  // a full-width (gutter-spanning) exhibit in a two-column layout: widen to the
+  // whole page when the opposite column has no text across the band
+  if (twoCol) {
+    const otherColHasText = pls.some(l => l.col !== cap.col && l.y < yTop && l.y > yBot);
+    if (!otherColHasText) { x0 = bx0 + pageWpts * 0.05; x1 = bx0 + pageWpts * 0.95; }
+  }
+  // convert PDF-space corners to viewport (canvas) pixels
+  const p1 = vp.convertToViewportPoint(x0, yTop);
+  const p2 = vp.convertToViewportPoint(x1, yBot);
+  const vx0 = Math.min(p1[0], p2[0]), vx1 = Math.max(p1[0], p2[0]);
+  const vy0 = Math.min(p1[1], p2[1]), vy1 = Math.max(p1[1], p2[1]);
+  const box = { x: Math.max(0, vx0), y: Math.max(0, vy0), w: vx1 - vx0, h: vy1 - vy0 };
+  if (box.w < 40 || box.h < 30 || box.w > vp.width || box.h > vp.height) return null;
+  return box;
 }
 
 /* ---------------- citations ---------------- */
@@ -323,11 +473,22 @@ function isSentenceEnd(tok, nxt) {
   }
   return true;
 }
+const REST_TYPES = { figure: 1, table: 1, matheq: 1 };
 function tokenizeDoc(doc) {
   const tokens = [];
   let sent = 0;
   doc.blocks.forEach((blk, bi) => {
     if (blk.ref && settings.refs === 'skip') return;
+    // figures, tables, and equations are 2D: they get one "rest" card the reader
+    // stops on, never a word stream
+    if (REST_TYPES[blk.type]) {
+      tokens.push({
+        t: blk.label || ('[' + blk.type + ']'), core: '', type: 'rest', rest: true,
+        restType: blk.type, block: bi, heading: false, sent, endS: true, endB: true
+      });
+      sent++;
+      return;
+    }
     let text = blk.text;
     if (settings.cites !== 'keep') text = stripCitations(text, settings.cites === 'collapse');
     const raw = text.split(/\s+/).filter(Boolean);
@@ -426,6 +587,14 @@ function buildSections() {
   secs.forEach((s, si) => { for (let i = s.start; i <= s.end; i++) so[i] = Math.min(si, 65535); });
   state.secOfTok = so;
 }
+function buildExhibitTicks() {
+  const toks = state.tokens, N = Math.max(1, toks.length - 1);
+  let html = '';
+  for (let i = 0; i < toks.length; i++) {
+    if (toks[i].rest) html += `<span class="extick" style="left:${(100 * i / N).toFixed(2)}%" title="${escHtml(toks[i].restType)}"></span>`;
+  }
+  el.exhibitTicks.innerHTML = html;
+}
 function buildSectMap() {
   const secs = state.sections;
   if (!secs.length || secs.length === 1) { el.sectmap.innerHTML = ''; state.segEls = []; return; }
@@ -463,9 +632,32 @@ function fitFont(box, len, threshold, base) {
   const k = len > threshold ? Math.max(0.45, threshold / len) : 1;
   box.style.fontSize = k < 1 ? `calc(${base} * ${settings.size} * ${k.toFixed(2)})` : '';
 }
+function renderRestCard(tok) {
+  el.wordbox.classList.add('hidden');
+  el.chunkbox.classList.add('hidden');
+  el.cardSub.classList.add('hidden');
+  el.restcard.classList.remove('hidden');
+  const blk = state.doc.blocks[tok.block] || {};
+  const kind = tok.restType;
+  const label = blk.label || (kind === 'figure' ? 'Figure' : kind === 'table' ? 'Table' : 'Equation');
+  let inner = `<div class="rest-kind">${escHtml(label)}</div>`;
+  if (kind === 'matheq') {
+    inner += `<div class="rest-math">${escHtml(blk.frag || blk.text || '')}</div>`;
+  } else if (blk.img) {
+    inner += `<img class="rest-img" src="${blk.img}" alt="${escHtml(label)}">`;
+  } else if (blk.hasImg) {
+    inner += `<div class="rest-missing">Image not loaded this session. Re-open the PDF to view it.</div>`;
+  }
+  const cap = blk.caption || (kind === 'matheq' ? '' : blk.text || '');
+  if (cap) inner += `<div class="rest-cap">${escHtml(cap)}</div>`;
+  el.restcard.innerHTML = inner;
+}
 function renderWord(a, b) {
   const toks = state.tokens;
   if (!toks.length) return;
+  if (toks[a].rest) { renderRestCard(toks[a]); return; }
+  el.restcard.classList.add('hidden');
+  if (state.restPending == null) el.restCont.classList.add('hidden');
   const isCard = toks[a].heading;
   if (isCard && state.sections.length > 1 && state.secOfTok) {
     const si = state.secOfTok[a];
@@ -555,6 +747,7 @@ const FUNC_WORD = /^(of|the|a|an|to|in|on|at|for|and|or|is|are|was|by|as|it)$/i;
 function chunkRange(i) {
   const toks = state.tokens;
   if (!toks.length) return [i, i];
+  if (toks[i].rest) return [i, i];        // a figure/table/equation is its own card
   if (toks[i].heading) {
     // headings display as one card
     let j = i;
@@ -586,6 +779,8 @@ function scheduleNext() {
   clearTimeout(state.timer);
   const [a, b] = chunkRange(state.idx);
   renderFrame();
+  if (state.tokens[a].rest) { enterRest(b); return; }   // stop the stream; wait for continue
+  if (state.sectionStop != null && a > state.sectionStop) { reachSectionStop(); return; }
   let units = 0;
   for (let i = a; i <= b; i++) units += state.units[i];
   let dur = units * (60000 / settings.wpm);
@@ -619,14 +814,42 @@ function nudgeWpm(f) {
 function pause() {
   state.playing = false;
   clearTimeout(state.timer);
+  if (state.restPending != null) { state.restPending = null; el.restCont.classList.add('hidden'); }
   el.btnPlay.innerHTML = '&#9654;';
   el.pauseHint.classList.remove('hidden');
   undim();
   savePos();
   renderFrame(true);
 }
-function togglePlay() { state.playing ? pause() : play(); }
+function togglePlay() {
+  if (state.restPending != null) { resumeRest(); return; }
+  state.playing ? pause() : play();
+}
+/* ---- rest cards: the stream stops on a figure/table/equation until you continue ---- */
+function enterRest(b) {
+  state.restPending = b;
+  undim();
+  el.restCont.classList.remove('hidden');
+  el.btnPlay.innerHTML = '&#9654;';   // controls read as "advance", not "pause"
+}
+function resumeRest() {
+  if (state.restPending == null) return;
+  const b = state.restPending;
+  const wasPlaying = state.playing;
+  state.restPending = null;
+  el.restCont.classList.add('hidden');
+  if (b + 1 >= state.tokens.length) { state.playing = false; finishDoc(); return; }
+  state.idx = b + 1;
+  if (wasPlaying) { el.btnPlay.innerHTML = '&#10074;&#10074;'; armDim(); scheduleNext(); }
+  else renderFrame(true);
+}
+function reachSectionStop() {
+  state.sectionStop = null;
+  pause();
+  el.sectionStopModal.classList.remove('hidden');
+}
 function finishDoc() {
+  reachedSectionEndClear();   // a one-section run that hits EOF must clear the chip + sectionStop
   state.idx = state.tokens.length - 1;
   state.finished = true;
   pause();
@@ -646,6 +869,7 @@ function finishDoc() {
 let lastRewindNudge = 0;
 function seek(i, opts) {
   state.finished = false;
+  if (state.restPending != null) { state.restPending = null; el.restCont.classList.add('hidden'); }
   // rewinds signal "too fast", but pure navigation (scrub, toc, search, notes)
   // does not, and repeated drag events only count once per 1.5s
   if (settings.speedMode === 'auto' && state.tokens.length && i < state.idx - 3 && !(opts && opts.nav)) {
@@ -654,8 +878,12 @@ function seek(i, opts) {
     state.autoStreak = 0;
   }
   state.idx = clamp(i, 0, state.tokens.length - 1);
-  if (state.playing) { state.ramp = settings.ramp ? Math.max(state.ramp, 5) : 0; scheduleNext(); }
-  else renderFrame(true);
+  if (state.playing) {
+    state.ramp = settings.ramp ? Math.max(state.ramp, 5) : 0;
+    el.btnPlay.innerHTML = '&#10074;&#10074;';   // resuming from a rest-parked seek: restore pause glyph
+    armDim();
+    scheduleNext();
+  } else renderFrame(true);
 }
 function sentStart(i) {
   const toks = state.tokens;
@@ -825,6 +1053,16 @@ function buildReader() {
   if (!state.doc) return;
   let html = '';
   state.doc.blocks.forEach((b, bi) => {
+    if (REST_TYPES[b.type]) {
+      const label = b.label || (b.type === 'figure' ? 'Figure' : b.type === 'table' ? 'Table' : 'Equation');
+      let inner = `<div class="rr-kind">${escHtml(label)}</div>`;
+      if (b.type === 'matheq') inner += `<div class="rr-math">${escHtml(b.frag || b.text || '')}</div>`;
+      else if (b.img) inner += `<img class="rr-img" src="${b.img}" alt="${escHtml(label)}">`;
+      else if (b.hasImg) inner += `<div class="rr-missing">Image not loaded this session.</div>`;
+      if (b.caption || (b.type !== 'matheq' && b.text)) inner += `<div class="rr-cap">${escHtml(b.caption || b.text)}</div>`;
+      html += `<div class="rr-exhibit" data-b="${bi}">${inner}</div>`;
+      return;
+    }
     const tag = b.type === 'p' ? 'p' : b.type;
     const skipped = b.ref && settings.refs === 'skip';
     const cls = b.ref ? ' class="refblock"' : '';
@@ -927,11 +1165,20 @@ function markCurrent() {
   if (state.doc.ephemeral) { pulse('already a note'); return; }
   const toks = state.tokens;
   const i = state.idx;
-  let a = i, b = i;
-  while (a > 0 && toks[a - 1].sent === toks[i].sent) a--;
-  while (b < toks.length - 1 && toks[b + 1].sent === toks[i].sent) b++;
-  const text = toks.slice(a, b + 1).map(t => t.t).join(' ');
-  const sec = state.sections.length && state.secOfTok ? state.sections[state.secOfTok[a]].title : '';
+  let text, sec;
+  if (toks[i].rest) {
+    // save an exhibit reference: its label + caption
+    const blk = state.doc.blocks[toks[i].block] || {};
+    const label = blk.label || (toks[i].restType === 'figure' ? 'Figure' : toks[i].restType === 'table' ? 'Table' : 'Equation');
+    text = (label + (blk.caption ? ': ' + blk.caption : blk.frag ? ': ' + blk.frag : '')).slice(0, 400);
+    sec = state.sections.length && state.secOfTok ? state.sections[state.secOfTok[i]].title : '';
+  } else {
+    let a = i, b = i;
+    while (a > 0 && toks[a - 1].sent === toks[i].sent) a--;
+    while (b < toks.length - 1 && toks[b + 1].sent === toks[i].sent) b++;
+    text = toks.slice(a, b + 1).map(t => t.t).join(' ');
+    sec = state.sections.length && state.secOfTok ? state.sections[state.secOfTok[a]].title : '';
+  }
   const hls = getHls();
   if (hls.some(h => h.text === text)) { pulse('already saved'); return; }
   if (dead.hl[state.doc.id] && dead.hl[state.doc.id][hashText(text)]) {
@@ -939,7 +1186,7 @@ function markCurrent() {
     saveDead();
   }
   const now = Date.now();
-  hls.push({ b: toks[a].block, text, sec, added: now, srs: initSrs(now) });
+  hls.push({ b: toks[i].block, text, sec, added: now, srs: initSrs(now) });
   setHls(hls);
   pulse('saved ✓');
   if (!el.drawerNotes.classList.contains('hidden')) renderNotes();
@@ -1105,7 +1352,7 @@ function answerHtml(text, answers) {
 
 let review = null;   // { deck, pos, revealed, done, hit }
 function startReview(deck, label) {
-  deck = deck.filter(c => c && c.h && c.h.text);
+  deck = deck.filter(c => c && (c.connect || (c.h && c.h.text)));
   if (!deck.length) { toast('Nothing to review yet. Save sentences with h while reading.'); return; }
   if (state.playing) pause();
   closeDrawers();
@@ -1116,8 +1363,11 @@ function startReview(deck, label) {
 }
 function renderCard() {
   const card = review.deck[review.pos];
-  const h = card.h;
   el.reviewProgress.textContent = (review.pos + 1) + ' / ' + review.deck.length;
+  el.reviewWrite.classList.add('hidden');
+  el.reviewSaveSynth.classList.add('hidden');
+  if (card.connect) { renderConnectCard(card); return; }
+  const h = card.h;
   el.reviewSec.textContent = [card.docTitle, h.sec].filter(Boolean).join(' · ').slice(0, 60);
   const cloze = settings.reviewMode === 'cloze' ? makeCloze(h.text) : null;
   if (cloze) {
@@ -1142,11 +1392,11 @@ function revealCard() {
   el.reviewReveal.classList.add('hidden');
   review.revealed = true;
 }
-function gradeHl(docId, text, good) {
-  // key by text, not array index: a background sync merge can reorder or drop
-  // items in the doc's highlight array between deck-build and grading
+function gradeHl(docId, ref, good) {
+  // key by stable id when present (synthesis notes), else by text: a background
+  // sync merge can reorder or drop items between deck-build and grading
   const hls = readHls(docId);
-  const h = hls.find(x => x.text === text);
+  const h = hls.find(x => (ref.id && x.id === ref.id) || (!ref.id && x.text === ref.text));
   if (!h) return true;                 // already deleted/merged away: nothing to persist
   gradeSrs(h, good);
   try { LS.setItem('saccade.hl.' + docId, JSON.stringify(hls)); }
@@ -1157,15 +1407,13 @@ function gradeHl(docId, text, good) {
 function gradeCard(good) {
   if (!review || !review.revealed) return;
   const card = review.deck[review.pos];
-  if (!gradeHl(card.docId, card.h.text, good)) {
+  if (!gradeHl(card.docId, card.h, good)) {
     toast('Storage full: could not save this card. Free up space and try again.', 3600);
     return;
   }
   review.done++;
   if (good) review.hit++;
-  review.pos++;
-  if (review.pos >= review.deck.length) endReview();
-  else renderCard();
+  advanceCard();
 }
 function endReview() {
   const r = review;
@@ -1173,7 +1421,9 @@ function endReview() {
   el.reviewModal.classList.add('hidden');
   updateReviewBadge();
   if (state.doc && !el.drawerNotes.classList.contains('hidden')) renderNotes();
-  if (r && r.done) {
+  if (r && r.label === 'connect') {
+    if (r.saved) toast('Saved ' + r.saved + ' connection' + (r.saved === 1 ? '' : 's') + '. They join your review deck.', 3600);
+  } else if (r && r.done) {
     const pct = Math.round(100 * r.hit / r.done);
     toast('Recalled ' + r.hit + ' of ' + r.done + ' (' + pct + '%). Missed cards come back sooner.', 3600);
   }
@@ -1184,28 +1434,204 @@ function reviewDoc() {
   startReview(getHls().map((h, idx) => ({ docId: id, docTitle: '', idx, h })), 'doc');
 }
 
+/* ---------------- creative connection drill ----------------
+   Creativity is combining remote-but-related ideas (Mednick 1962; bisociation).
+   The app pairs two of YOUR notes from different papers and asks you to write the
+   link — the generation effect (Slamecka & Graf 1978) means you must write it, the
+   app never does. The synthesis becomes a note that itself enters spaced review. */
+function noteRareWords(text) {
+  const set = new Set();
+  for (const w of text.toLowerCase().split(/\s+/)) {
+    if (w.indexOf('(ref)') > -1 || w.indexOf('[math]') > -1) continue;
+    const core = w.replace(/[^a-z0-9]/g, '');
+    if (core.length >= 4 && !COMMON.has(core)) set.add(core);
+  }
+  return set;
+}
+function jaccard(A, B) {
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const x of A) if (B.has(x)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+function buildConnectionDeck() {
+  let notes = [];
+  for (const e of libIndex()) {
+    if (e.id === '__synth__') continue;
+    for (const h of readHls(e.id)) {
+      if (h.kind === 'synth') continue;
+      notes.push({ docId: e.id, docTitle: e.title, text: h.text, sec: h.sec, words: noteRareWords(h.text) });
+    }
+  }
+  if (notes.length > 300) notes = notes.slice(0, 300);   // bound the O(n^2) pairing
+  if (notes.length < 2) return [];
+  const pairs = [];
+  for (let i = 0; i < notes.length; i++) {
+    for (let j = i + 1; j < notes.length; j++) {
+      if (notes[i].docId === notes[j].docId) continue;   // link ACROSS papers
+      let shared = 0;
+      for (const x of notes[i].words) if (notes[j].words.has(x)) shared++;
+      if (shared < 1) continue;
+      const jac = jaccard(notes[i].words, notes[j].words);
+      if (jac >= 0.05 && jac <= 0.28) pairs.push({ score: jac, a: notes[i], b: notes[j] });
+    }
+  }
+  // prefer the mid relatedness band: remote enough to be creative, not unrelated noise
+  pairs.sort((p, q) => Math.abs(p.score - 0.15) - Math.abs(q.score - 0.15));
+  return pairs.slice(0, 8).map(p => ({ connect: { a: p.a, b: p.b } }));
+}
+function startConnectionDrill() {
+  if (state.doc && state.doc.ephemeral) { toast('Not during a replay.'); return; }
+  const deck = buildConnectionDeck();
+  if (!deck.length) {
+    toast('Save a few notes across different papers first. Connections need remote ideas to link.', 4500);
+    return;
+  }
+  startReview(deck, 'connect');
+}
+function renderConnectCard(card) {
+  const a = card.connect.a, b = card.connect.b;
+  el.reviewSec.textContent = 'Connect two ideas';
+  el.reviewPrompt.innerHTML =
+    `<div class="seed"><span class="seed-src">${escHtml(a.docTitle || a.sec || 'note')}</span>${escHtml(a.text)}</div>` +
+    `<div class="seed-vs">+</div>` +
+    `<div class="seed"><span class="seed-src">${escHtml(b.docTitle || b.sec || 'note')}</span>${escHtml(b.text)}</div>`;
+  el.reviewCue.textContent = 'What links these two? Write it in your own words.';
+  el.reviewAnswer.classList.add('hidden');
+  el.reviewGrade.classList.add('hidden');
+  el.reviewReveal.classList.add('hidden');
+  el.reviewWrite.classList.remove('hidden');
+  el.reviewWrite.value = '';
+  el.reviewSaveSynth.classList.remove('hidden');
+  review.revealed = false;
+  setTimeout(() => { try { el.reviewWrite.focus(); } catch (e) {} }, 60);
+}
+function saveSynth(text, seeds) {
+  const now = Date.now();
+  const synth = readHls('__synth__');
+  synth.push({
+    kind: 'synth', id: 'syn_' + now.toString(36) + Math.random().toString(36).slice(2, 7),
+    b: 0, text, sec: 'Synthesis', added: now, srs: initSrs(now),
+    seeds: seeds.map(s => ({ docId: s.docId, text: s.text, sec: s.sec }))
+  });
+  try { LS.setItem('saccade.hl.__synth__', JSON.stringify(synth)); }
+  catch (e) { toast('Storage full: could not save.'); return false; }
+  const ix = libIndex();
+  if (!ix.some(e => e.id === '__synth__')) {
+    ix.unshift({ id: '__synth__', title: 'Synthesis', words: 0, last: now, virtual: true });
+    try { LS.setItem('saccade.lib', JSON.stringify(ix)); }
+    catch (e) {
+      synth.pop();                                            // roll back so the note is not orphaned
+      try { LS.setItem('saccade.hl.__synth__', JSON.stringify(synth)); } catch (e2) {}
+      toast('Storage full: could not save.'); return false;
+    }
+  }
+  untombstoneDoc('__synth__');   // recreating notes is a deliberate re-add
+  updateReviewBadge();
+  schedulePush();
+  return true;
+}
+function saveSynthCard() {
+  if (!review) return;
+  const card = review.deck[review.pos];
+  if (!card || !card.connect) return;
+  const text = el.reviewWrite.value.trim();
+  if (text.length < 8) { toast('Write a sentence linking the two ideas first.'); return; }
+  if (saveSynth(text, [card.connect.a, card.connect.b])) {
+    review.saved = (review.saved || 0) + 1;
+    advanceCard();
+  }
+}
+function advanceCard() {
+  review.pos++;
+  if (review.pos >= review.deck.length) endReview();
+  else renderCard();
+}
+
+/* ---------------- exhibit wayfinding ---------------- */
+function jumpExhibit(dir) {
+  const toks = state.tokens;
+  if (!toks.length) return;
+  if (dir > 0) {
+    for (let i = state.idx + 1; i < toks.length; i++) if (toks[i].rest) { seek(i, { nav: true }); return; }
+    toast('No more figures or tables ahead.');
+  } else {
+    for (let i = state.idx - 1; i >= 0; i--) if (toks[i].rest) { seek(i, { nav: true }); return; }
+    toast('No figures or tables behind.');
+  }
+}
+
+/* ---------------- tiny-start: read one section then stop ---------------- */
+function startOneSection() {
+  if (!state.tokens.length || !state.secOfTok) { toast('Nothing loaded.'); return; }
+  const si = state.secOfTok[state.idx];
+  const sec = state.sections[si];
+  if (!sec) return;
+  state.sectionStop = sec.end;
+  if (!state.playing) play();
+  el.btnOneSection.classList.add('on');
+  toast('Reading one section, then a stop.');
+}
+function reachedSectionEndClear() { state.sectionStop = null; el.btnOneSection.classList.remove('on'); }
+
+/* ---------------- "where was I" re-entry ---------------- */
+function reentryKey(id) { return 'saccade.reentry.' + id; }
+function stampReentry() {
+  if (!state.doc || state.doc.ephemeral || !state.tokens.length) return;
+  const toks = state.tokens;
+  const i = clamp(state.idx, 0, toks.length - 1);
+  let a = i;
+  while (a > 0 && toks[a - 1].sent === toks[i].sent && !toks[a - 1].rest) a--;
+  const tail = toks.slice(a, i + 1).filter(t => !t.rest).map(t => t.t).join(' ');
+  const sec = state.sections.length && state.secOfTok ? state.sections[state.secOfTok[i]].title : '';
+  try { LS.setItem(reentryKey(state.doc.id), JSON.stringify({ t: Date.now(), sec, tail })); } catch (e) {}
+}
+function maybeReentry(id) {
+  let r = null;
+  try { r = JSON.parse(LS.getItem(reentryKey(id)) || 'null'); } catch (e) {}
+  if (!r || !r.t) return;
+  const gapMin = (Date.now() - r.t) / 60000;
+  if (gapMin < 45) return;                   // same-session pause: no card
+  const hls = getHls();
+  const lastNote = hls.length ? hls[hls.length - 1].text : '';
+  const ago = gapMin < 1440 ? Math.round(gapMin / 60) + ' hour' + (gapMin < 90 ? '' : 's') : Math.round(gapMin / 1440) + ' day' + (gapMin < 2880 ? '' : 's');
+  el.reentryBody.innerHTML =
+    `<p class="reentry-ago">You were last here about ${ago} ago.</p>` +
+    (r.sec ? `<div class="reentry-sec">${escHtml(r.sec)}</div>` : '') +
+    (r.tail ? `<div class="reentry-tail">${escHtml(r.tail)}</div>` : '') +
+    (lastNote ? `<div class="reentry-note"><span>last note</span>${escHtml(lastNote)}</div>` : '');
+  el.reentryModal.classList.remove('hidden');
+}
+
 /* ---------------- library / persistence ---------------- */
 function libIndex() { try { return JSON.parse(LS.getItem('saccade.lib') || '[]'); } catch (e) { return []; } }
+function stripImgs(blocks) {
+  // figure/table images are session-only: never let a data URL reach localStorage
+  return blocks.map(b => b.img ? Object.assign({}, b, { img: undefined, hasImg: true }) : b);
+}
 function persistDoc() {
   const d = state.doc;
   untombstoneDoc(d.id);     // opening a doc is a deliberate re-add
   try {
-    LS.setItem('saccade.doc.' + d.id, JSON.stringify({ title: d.title, blocks: d.blocks }));
+    LS.setItem('saccade.doc.' + d.id, JSON.stringify({ title: d.title, blocks: stripImgs(d.blocks) }));
     let ix = libIndex().filter(e => e.id !== d.id);
     ix.unshift({ id: d.id, title: d.title, words: state.tokens.length, last: Date.now(), bodyless: false });
     // cache eviction, not user intent: past the 20 most-recent docs, drop only
     // the body. Keep the lib entry so positions, notes, and the review schedule
     // stay visible and keep coming due. Hard-cap the index so it cannot grow forever.
     for (let i = 20; i < ix.length; i++) {
-      if (LS.getItem('saccade.doc.' + ix[i].id)) { LS.removeItem('saccade.doc.' + ix[i].id); ix[i].bodyless = true; }
+      if (ix[i].id !== '__synth__' && LS.getItem('saccade.doc.' + ix[i].id)) { LS.removeItem('saccade.doc.' + ix[i].id); ix[i].bodyless = true; }
     }
     if (ix.length > 300) {
+      const synth = ix.find(e => e.id === '__synth__');   // never GC the user's own synthesis notes
       for (const rm of ix.slice(300)) {
+        if (rm.id === '__synth__') continue;
         LS.removeItem('saccade.doc.' + rm.id);
         LS.removeItem('saccade.pos.' + rm.id);
         LS.removeItem('saccade.hl.' + rm.id);
       }
       ix = ix.slice(0, 300);
+      if (synth && !ix.some(e => e.id === '__synth__')) ix.push(synth);
     }
     LS.setItem('saccade.lib', JSON.stringify(ix));
     LS.setItem('saccade.last', d.id);
@@ -1246,11 +1672,19 @@ function savePos() {
       if (e) { e.last = Date.now(); LS.setItem('saccade.lib', JSON.stringify(ix)); }
       schedulePush();
     }
+    stampReentry();
   } catch (e) { /* quota */ }
 }
 function renderLib() {
   const ix = libIndex();
   el.libList.innerHTML = ix.map(e => {
+    if (e.id === '__synth__') {
+      const n = readHls('__synth__').length;
+      return `<div class="libitem synth" data-id="__synth__">
+        <div class="t">&#10022; Synthesis</div>
+        <div class="m"><span>${n} connection${n === 1 ? '' : 's'} you wrote</span><span class="del" data-id="__synth__">delete</span></div>
+      </div>`;
+    }
     let pct = 0;
     try { pct = (JSON.parse(LS.getItem('saccade.pos.' + e.id) || '{}').pct) || 0; } catch (err) {}
     const noBody = e.remoteOnly || e.bodyless;
@@ -1272,6 +1706,7 @@ function openDoc(doc) {
   computeUnits();
   buildSections();
   buildSectMap();
+  buildExhibitTicks();
   if (doc.ephemeral) {
     state.idx = 0;
   } else {
@@ -1285,6 +1720,9 @@ function openDoc(doc) {
   state.playedMs = 0;
   state.finished = false;
   state.autoStreak = 0;
+  state.restPending = null;
+  state.sectionStop = null;
+  el.restCont.classList.add('hidden');
   el.reader.classList.add('hidden');
   buildToc();
   updateNoteCount();
@@ -1295,6 +1733,7 @@ function openDoc(doc) {
   if (!doc.ephemeral) persistDoc();
   renderFrame(true);
   closeDrawers();
+  if (!doc.ephemeral) maybeReentry(doc.id);
 }
 function pause0() { state.playing = false; clearTimeout(state.timer); if (breakInterval) endBreak(false); }
 function showLoader() {
@@ -1316,10 +1755,13 @@ function retokenize() {
   computeUnits();
   buildSections();
   buildSectMap();
+  buildExhibitTicks();
   restorePos(pk);
   state.lastSent = -1;
   state.lastBlock = -1;
   state.readerBuilt = false;
+  state.restPending = null;
+  el.restCont.classList.add('hidden');
   if (!el.reader.classList.contains('hidden')) buildReader();
   buildToc();
   renderFrame(true);
@@ -1488,6 +1930,8 @@ function closeAll() {
   el.helpModal.classList.add('hidden');
   el.recapModal.classList.add('hidden');
   el.statsModal.classList.add('hidden');
+  el.sectionStopModal.classList.add('hidden');
+  el.reentryModal.classList.add('hidden');
   if (review) endReview();
   document.body.classList.remove('focusmode');
 }
@@ -1568,12 +2012,27 @@ el.reviewReveal.addEventListener('click', revealCard);
 el.reviewAgain.addEventListener('click', () => gradeCard(false));
 el.reviewGood.addEventListener('click', () => gradeCard(true));
 el.reviewQuit.addEventListener('click', endReview);
+el.reviewSaveSynth.addEventListener('click', saveSynthCard);
+el.reviewWrite.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.preventDefault(); endReview(); }
+  else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveSynthCard(); }
+});
+el.btnOneSection.addEventListener('click', startOneSection);
+el.btnKeepGoing.addEventListener('click', () => { el.sectionStopModal.classList.add('hidden'); el.btnOneSection.classList.remove('on'); play(); });
+el.btnSectionDone.addEventListener('click', () => {
+  el.sectionStopModal.classList.add('hidden');
+  el.btnOneSection.classList.remove('on');
+  if (getHls().length) reviewDoc();
+});
+el.btnReentryResume.addEventListener('click', () => { el.reentryModal.classList.add('hidden'); renderFrame(true); });
 [el.helpModal, el.statsModal, el.recapModal].forEach(m =>
   m.addEventListener('click', e => { if (e.target === m) m.classList.add('hidden'); }));
+el.restCont.addEventListener('click', () => { if (state.restPending != null) resumeRest(); });
 
 let suppressClicksUntil = 0;   // timestamp; survives iOS not synthesizing a click
 el.stage.addEventListener('click', e => {
   if (Date.now() < suppressClicksUntil) return;
+  if (state.restPending != null) { resumeRest(); return; }   // continue past a figure/table/equation
   const coarse = matchMedia('(pointer: coarse)').matches;
   const r = el.stage.getBoundingClientRect();
   const fx = (e.clientX - r.left) / Math.max(1, r.width);
@@ -1661,6 +2120,13 @@ el.libList.addEventListener('click', e => {
   }
   const item = e.target.closest('.libitem');
   if (!item) return;
+  if (item.dataset.id === '__synth__') {
+    closeDrawers();
+    const syn = readHls('__synth__');
+    if (!syn.length) { toast('No synthesis notes yet. Press c while reading to link two ideas.'); return; }
+    startReview(syn.map((h, idx) => ({ docId: '__synth__', docTitle: 'Synthesis', idx, h })), 'doc');
+    return;
+  }
   try {
     const d = JSON.parse(LS.getItem('saccade.doc.' + item.dataset.id));
     if (d) openDoc({ id: item.dataset.id, title: d.title, blocks: d.blocks });
@@ -1720,7 +2186,7 @@ bindSetting(el.setDailyGoal, 'dailyGoal', 'goal', i => parseInt(i.value, 10));
 bindSetting(el.setReviewMode, 'reviewMode', 'none');
 
 /* keyboard */
-const PLAYBACK_KEYS = [' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '0', 'h', 'b', 'f', 'r'];
+const PLAYBACK_KEYS = [' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '0', 'h', 'b', 'f', 'r', 'g', 'G'];
 document.addEventListener('keydown', e => {
   if (e.target && e.target.matches && e.target.matches('input, textarea, select')) return;
   if (!el.breakOverlay.classList.contains('hidden')) {
@@ -1729,10 +2195,21 @@ document.addEventListener('keydown', e => {
   }
   if (!el.reviewModal.classList.contains('hidden')) {
     if (e.repeat || !review) return;   // a held Space must not reveal then grade in one press
+    const isConnect = review.deck[review.pos] && review.deck[review.pos].connect;
     if (e.key === 'Escape') { e.preventDefault(); endReview(); }
+    else if (isConnect) { /* typing happens in the textarea; only Escape is a modal key */ }
     else if (!review.revealed && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); revealCard(); }
     else if (review.revealed && (e.key === '1' || e.key === 'ArrowLeft')) { e.preventDefault(); gradeCard(false); }
     else if (review.revealed && (e.key === '2' || e.key === 'ArrowRight')) { e.preventDefault(); gradeCard(true); }
+    return;
+  }
+  if (!el.reentryModal.classList.contains('hidden')) {
+    if (e.key === ' ' || e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); el.btnReentryResume.click(); }
+    return;   // swallow all keys so playback cannot start behind the card
+  }
+  if (!el.sectionStopModal.classList.contains('hidden')) {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); el.btnKeepGoing.click(); }
+    else if (e.key === 'Escape') { e.preventDefault(); el.btnSectionDone.click(); }
     return;
   }
   const modal = [el.recapModal, el.statsModal, el.helpModal].find(m => !m.classList.contains('hidden'));
@@ -1761,6 +2238,8 @@ document.addEventListener('keydown', e => {
       break;
     case 's': toggleDrawer(el.drawerSettings); break;
     case 'v': startReview(dueItems(), 'due'); break;
+    case 'c': startConnectionDrill(); break;
+    case 'g': case 'G': e.preventDefault(); jumpExhibit(e.shiftKey ? -1 : 1); break;
     case '/': e.preventDefault(); if (el.drawerToc.classList.contains('hidden')) toggleDrawer(el.drawerToc); el.searchInput.focus(); break;
     case '?': el.helpModal.classList.toggle('hidden'); break;
     case 'Escape': closeAll(); break;
@@ -1954,6 +2433,10 @@ function mergeRemote(p, opts) {
           map.set(re.id, Object.assign({}, re, { remoteOnly: undefined }));
           changed = true;
         } catch (err) { /* quota; skip this doc body */ }
+      } else if (re.id === '__synth__' || re.virtual) {
+        // the virtual synthesis doc has no body by design
+        map.set(re.id, Object.assign({}, re, { virtual: true }));
+        changed = true;
       } else {
         // doc body was shed for size: keep the entry so positions, notes,
         // and the library listing survive round-trips
@@ -1972,14 +2455,15 @@ function mergeRemote(p, opts) {
     if (p.hl && p.hl[re.id] && p.hl[re.id].length) {
       try {
         const cur = JSON.parse(LS.getItem('saccade.hl.' + re.id) || '[]');
-        const byText = new Map(cur.map(h => [h.text, h]));
+        const keyOf = h => h.id || h.text;   // synth notes carry a stable id; atoms key by text
+        const byKey = new Map(cur.map(h => [keyOf(h), h]));
         const deadHl = dead.hl[re.id] || {};
         let touched = false;
         for (const h of p.hl[re.id]) {
           const ts = deadHl[hashText(h.text)];
           if (ts && ts >= (h.added || 0)) continue;   // deleted after it was saved
-          const local = byText.get(h.text);
-          if (!local) { cur.push(h); byText.set(h.text, h); touched = true; }
+          const local = byKey.get(keyOf(h));
+          if (!local) { cur.push(h); byKey.set(keyOf(h), h); touched = true; }
           else if (h.srs && (h.srs.last || 0) > (local.srs ? (local.srs.last || 0) : -1)) {
             local.srs = h.srs; touched = true;         // adopt the newer review schedule
           }
@@ -2149,5 +2633,7 @@ window.Saccade = {
   collectPayload, mergeRemote, runSearch, showStats, buildSections,
   makeCloze, gradeSrs, initSrs, dueItems, startReview, reviewDoc, gradeCard, revealCard,
   updateReviewBadge, exportData, importData,
+  buildConnectionDeck, startConnectionDrill, saveSynth, saveSynthCard, jumpExhibit,
+  startOneSection, maybeReentry, stampReentry, readHls,
   get review() { return review; }
 };
