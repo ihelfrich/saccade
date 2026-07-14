@@ -21,9 +21,10 @@
     <span id="docTitle" title=""></span>
   </div>
   <div class="topbar-right">
-    <span id="wordsToday" title="Words read today"></span>
+    <button id="wordsToday" title="Reading stats"></button>
     <button class="iconbtn" id="btnLibrary" title="Library (l)">&#9776;</button>
-    <button class="iconbtn" id="btnToc" title="Contents (t)">&#167;</button>
+    <button class="iconbtn" id="btnToc" title="Contents and search (t)">&#167;</button>
+    <button class="iconbtn" id="btnNotes" title="Notes (n)">&#9998;<span id="noteCount"></span></button>
     <button class="iconbtn" id="btnSettings" title="Settings (s)">&#9881;</button>
     <button class="iconbtn" id="btnHelp" title="Help (?)">?</button>
   </div>
@@ -51,13 +52,17 @@
 <!-- Main reading UI -->
 <main id="readerUI" class="hidden">
 
-  <div id="stage" title="Tap to play / pause">
+  <div id="stage" title="Tap to play / pause. Edge taps jump sentences. Hold to save the sentence.">
+    <div class="tapzone left">&#8249;</div>
+    <div class="tapzone right">&#8250;</div>
     <div class="guide"><span class="tick"></span></div>
     <div id="wordbox">
       <span id="pre"></span><span id="orp"></span><span id="post"></span>
     </div>
     <div id="chunkbox" class="hidden"></div>
+    <div id="cardSub" class="hidden"></div>
     <div class="guide flip"><span class="tick"></span></div>
+    <div id="markPulse">saved &#10004;</div>
     <div id="pauseHint">press space or tap to start</div>
   </div>
 
@@ -72,20 +77,24 @@
       <button class="ctl big" id="btnPlay" title="Play / pause (space)">&#9654;</button>
       <button class="ctl" id="btnFwdSent" title="Forward one sentence (right)">&#8250;</button>
       <button class="ctl" id="btnFwdPara" title="Forward one paragraph (shift+right)">&#187;</button>
+      <button class="ctl mark" id="btnMark" title="Save this sentence to notes (h)">&#9873;</button>
     </div>
+    <div id="sectmap" title="Sections. Tap to jump."></div>
     <div class="ctl-row">
       <input type="range" id="scrub" min="0" max="0" value="0" step="1">
     </div>
     <div class="ctl-row meta">
       <span class="wpm-group">
         <button class="mini" id="wpmDown" title="Slower (down)">&#8722;</button>
-        <span id="wpmVal">320</span><span class="unit">wpm</span>
+        <span id="wpmVal">320</span><button class="unit" id="unitWpm" title="Toggle auto speed">wpm</button>
         <button class="mini" id="wpmUp" title="Faster (up)">+</button>
+        <span id="sprint" title="Time until rest break"></span>
       </span>
       <span class="presets">
         <button class="chip" data-preset="skim">Skim</button>
         <button class="chip" data-preset="read">Read</button>
         <button class="chip" data-preset="study">Study</button>
+        <button class="chip" id="chipPass1" title="Headings and first sentences only">1st pass</button>
       </span>
       <span class="right-meta">
         <button class="mini wide" id="btnReaderView" title="Full text view (r)">text</button>
@@ -102,10 +111,10 @@
 
   <div class="set-group"><h3>Display</h3>
     <label>Theme
-      <select id="setTheme"><option value="dark">Dark</option><option value="sepia">Sepia</option><option value="light">Light</option></select>
+      <select id="setTheme"><option value="dark">Dark</option><option value="night">Night (low blue)</option><option value="sepia">Sepia</option><option value="light">Light</option></select>
     </label>
     <label>Font
-      <select id="setFont"><option value="sans">Sans</option><option value="serif">Serif</option><option value="mono">Mono</option></select>
+      <select id="setFont"><option value="hyper">Hyperlegible</option><option value="sans">Sans</option><option value="serif">Serif</option><option value="mono">Mono</option></select>
     </label>
     <label>Word size <input type="range" id="setSize" min="0.6" max="1.6" step="0.05" value="1"></label>
     <label class="check"><input type="checkbox" id="setGuides" checked> Focus guides above and below the word</label>
@@ -117,14 +126,20 @@
   </div>
 
   <div class="set-group"><h3>Pacing</h3>
+    <label>Speed control
+      <select id="setSpeedMode"><option value="manual">Manual</option><option value="auto">Auto (adapts to rewinds)</option></select>
+    </label>
     <label class="check"><input type="checkbox" id="setRamp" checked> Warm-up ramp on every resume</label>
-    <label class="check"><input type="checkbox" id="setLongWords" checked> Slow down on long or complex words</label>
+    <label class="check"><input type="checkbox" id="setLongWords" checked> Slow down on long, rare, or complex words</label>
     <label>Punctuation pauses <input type="range" id="setPunct" min="0" max="2" step="0.1" value="1"></label>
     <label>Words per flash
       <select id="setChunk"><option value="1">1 (ORP mode)</option><option value="2">2</option><option value="3">3</option></select>
     </label>
     <label>Rest break every
       <select id="setBreakEvery"><option value="0">off</option><option value="5">5 min</option><option value="8">8 min</option><option value="12">12 min</option></select>
+    </label>
+    <label>Daily goal
+      <select id="setDailyGoal"><option value="0">off</option><option value="2000">2k words</option><option value="5000">5k words</option><option value="10000">10k words</option><option value="20000">20k words</option></select>
     </label>
   </div>
 
@@ -139,6 +154,19 @@
       <select id="setRefs"><option value="skip">Skip</option><option value="include">Include</option></select>
     </label>
   </div>
+
+  <div class="set-group"><h3>Sync between devices</h3>
+    <p class="set-note">Optional. Keeps your library, positions, and notes in a private GitHub Gist so Mac and iPad stay in step. Paste a GitHub token with only the <b>gist</b> scope. The token never leaves this device.</p>
+    <div id="syncOff">
+      <input type="password" id="syncTokenInput" placeholder="GitHub token (gist scope)" autocomplete="off">
+      <button class="btn primary full" id="btnSyncConnect">Connect sync</button>
+    </div>
+    <div id="syncOn" class="hidden">
+      <p class="set-note" id="syncStatus"></p>
+      <button class="btn full" id="btnSyncNow">Sync now</button>
+      <button class="btn full" id="btnSyncOffBtn">Disconnect</button>
+    </div>
+  </div>
 </aside>
 
 <!-- Library drawer -->
@@ -151,7 +179,21 @@
 <!-- TOC drawer -->
 <aside id="drawerToc" class="drawer left hidden">
   <h2>Contents</h2>
+  <input type="search" id="searchInput" placeholder="Search in document (/)" autocomplete="off">
+  <div id="searchResults" class="hidden"></div>
   <div id="tocList"></div>
+</aside>
+
+<!-- Notes drawer -->
+<aside id="drawerNotes" class="drawer right hidden">
+  <h2>Notes</h2>
+  <p class="set-note">Press h (or hold the word on touch) while reading to save the current sentence here.</p>
+  <div class="note-actions">
+    <button class="btn" id="btnReplayNotes" title="Re-read your saved sentences as RSVP">Replay</button>
+    <button class="btn" id="btnCopyNotes" title="Copy all notes as markdown">Copy md</button>
+    <button class="btn" id="btnClearNotes">Clear</button>
+  </div>
+  <div id="noteList"></div>
 </aside>
 
 <!-- Help -->
@@ -164,13 +206,17 @@
       <tr><td>shift + &#8592; / &#8594;</td><td>back / forward one paragraph</td></tr>
       <tr><td>&#8593; / &#8595;</td><td>speed up / slow down</td></tr>
       <tr><td>0</td><td>restart current sentence</td></tr>
+      <tr><td>h</td><td>save current sentence to notes</td></tr>
+      <tr><td>b</td><td>back 30 words</td></tr>
       <tr><td>f</td><td>focus mode (hide everything but the word)</td></tr>
       <tr><td>r</td><td>full text view</td></tr>
-      <tr><td>t / l / s</td><td>contents / library / settings</td></tr>
+      <tr><td>/</td><td>search in document</td></tr>
+      <tr><td>t / l / n / s</td><td>contents / library / notes / settings</td></tr>
       <tr><td>esc</td><td>close panels, exit focus</td></tr>
     </table>
-    <p>On touch: tap the word to play or pause, swipe left or right for sentence jumps.</p>
+    <p>On touch: tap the center to play or pause, tap the left or right edge to jump a sentence, hold the word to save the sentence to notes, swipe for sentence jumps.</p>
     <p>Pause any time you feel lost: the full sentence appears with your place marked. Position is saved automatically.</p>
+    <p><b>iPad:</b> open this site in Safari, tap Share, then Add to Home Screen. It becomes a full-screen app and works offline. Turn on sync in settings to carry your library and positions between devices.</p>
     <button class="btn primary" id="btnCloseHelp">Close</button>
   </div>
 </div>
@@ -184,10 +230,33 @@
   </div>
 </div>
 
+<!-- Finish recap -->
+<div id="recapModal" class="modal hidden">
+  <div class="modal-inner">
+    <h2>Finished</h2>
+    <div id="recapBody"></div>
+    <div class="note-actions">
+      <button class="btn primary" id="btnRecapReplay">Replay highlights</button>
+      <button class="btn" id="btnRecapClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Stats -->
+<div id="statsModal" class="modal hidden">
+  <div class="modal-inner narrow">
+    <h2>Reading</h2>
+    <div id="statsBody"></div>
+    <button class="btn" id="btnStatsClose">Close</button>
+  </div>
+</div>
+
+<div id="backdrop" class="hidden"></div>
 <div id="dropOverlay" class="hidden">Drop to open</div>
 <div id="toast" class="hidden"></div>
 
 <script src="vendor/pdf.min.js"></script>
+<script src="common-words.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
